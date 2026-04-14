@@ -1438,8 +1438,8 @@
       }
     },
     {
-      "name": "telegram",
-      "description": "Telegram messaging bridge with built-in access control. Manage pairing, allowlists, and policy via /telegram:access.",
+      "name": "telegram-topics",
+      "description": "Telegram bridge with topic scoping (forum supergroup support)",
       "category": "productivity",
       "source": "./external_plugins/telegram"
     },
