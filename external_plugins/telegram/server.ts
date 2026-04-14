@@ -97,6 +97,10 @@ type PendingEntry = {
 type GroupPolicy = {
   requireMention: boolean
   allowFrom: string[]
+  /** If set, only deliver messages whose message_thread_id is in this list.
+   *  Use 1 for the General topic (forum supergroups don't set message_thread_id
+   *  on General messages; we normalize undefined → 1 to match Telegram's Copy-Link IDs). */
+  topics?: number[]
 }
 
 type Access = {
@@ -270,6 +274,12 @@ function gate(ctx: Context): GateResult {
     const groupId = String(ctx.chat!.id)
     const policy = access.groups[groupId]
     if (!policy) return { action: 'drop' }
+    // Topic scoping: only deliver messages from whitelisted topics in this group.
+    // General topic messages have no message_thread_id in the API — normalize to 1.
+    if (policy.topics && policy.topics.length > 0) {
+      const threadId = ctx.message?.message_thread_id ?? 1
+      if (!policy.topics.includes(threadId)) return { action: 'drop' }
+    }
     const groupAllowFrom = policy.allowFrom ?? []
     const requireMention = policy.requireMention ?? true
     if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
@@ -434,7 +444,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'reply',
       description:
-        'Reply on Telegram. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images or documents.',
+        'Reply on Telegram. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for native threading, message_thread_id to target a forum topic, and files (absolute paths) to attach images or documents.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -443,6 +453,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           reply_to: {
             type: 'string',
             description: 'Message ID to thread under. Use message_id from the inbound <channel> block.',
+          },
+          message_thread_id: {
+            type: 'string',
+            description: 'Forum topic id to post into. Use message_thread_id from the inbound <channel> block. Usually unnecessary — reply_to already threads into the source topic natively.',
           },
           files: {
             type: 'array',
@@ -511,6 +525,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const chat_id = args.chat_id as string
         const text = args.text as string
         const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined
+        const message_thread_id = args.message_thread_id != null
+          ? Number(args.message_thread_id)
+          : undefined
         const files = (args.files as string[] | undefined) ?? []
         const format = (args.format as string | undefined) ?? 'text'
         const parseMode = format === 'markdownv2' ? 'MarkdownV2' as const : undefined
@@ -541,6 +558,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             const sent = await bot.api.sendMessage(chat_id, chunks[i], {
               ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
               ...(parseMode ? { parse_mode: parseMode } : {}),
+              ...(message_thread_id != null ? { message_thread_id } : {}),
             })
             sentIds.push(sent.message_id)
           }
@@ -556,9 +574,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         for (const f of files) {
           const ext = extname(f).toLowerCase()
           const input = new InputFile(f)
-          const opts = reply_to != null && replyMode !== 'off'
-            ? { reply_parameters: { message_id: reply_to } }
-            : undefined
+          const opts = {
+            ...(reply_to != null && replyMode !== 'off' ? { reply_parameters: { message_id: reply_to } } : {}),
+            ...(message_thread_id != null ? { message_thread_id } : {}),
+          }
           if (PHOTO_EXTS.has(ext)) {
             const sent = await bot.api.sendPhoto(chat_id, input, opts)
             sentIds.push(sent.message_id)
@@ -961,6 +980,10 @@ async function handleInbound(
       meta: {
         chat_id,
         ...(msgId != null ? { message_id: String(msgId) } : {}),
+        ...(ctx.message?.message_thread_id != null
+          ? { message_thread_id: String(ctx.message.message_thread_id) }
+          : {}),
+        ...(ctx.message?.is_topic_message ? { is_topic_message: 'true' } : {}),
         user: from.username ?? String(from.id),
         user_id: String(from.id),
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
